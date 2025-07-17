@@ -1,3 +1,4 @@
+import os
 import torch
 from torch import nn
 from torch.nn.functional import one_hot
@@ -41,6 +42,7 @@ def featurize(seqs, device=torch.device('cuda')):
         torch.cat((torch.arange(len(heavy)), torch.arange(len(light)) + 500), dim=-1)
         for heavy, light in chains
     ]
+    features['mask'] = [torch.ones_like(aatype) for aatype in features['aatype']]
     for key in features:
         features[key] = pad_sequence(features[key], batch_first=True).to(device)
     return features
@@ -53,14 +55,19 @@ class FlashABB(nn.Module):
 
 
 class FlashABBResult:
-    def __init__(self, seqs, output):
+    def __init__(self, seqs, output, mask):
         self.seqs = seqs
         self.output = output
+        self.mask = mask
 
     # @classmethod
     @property
     def coords(self):
         return self.output['positions'][-1,...]
+
+    @property
+    def bb_coords(self):
+        return self.output['positions'][-1,...,:4,:]
 
     def to_pdbs(self, names, pdb_dir='.'):
         from .openfold.np.protein import Protein, to_pdb
@@ -84,5 +91,6 @@ class FlashABBResult:
                 chain_index=(residue_idx < 500).astype(int),
             )
             pdb_lines = to_pdb(prot)
+            os.makedirs(pdb_dir, exist_ok=True)
             with open(f'{pdb_dir}/{names[i]}.pdb', 'w') as f:
                 f.write(pdb_lines)

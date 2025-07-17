@@ -29,7 +29,7 @@ class pretrained:
             {'single': features['single']},
             features['aatype'],
             features['res_idx'],
-            None # TODO: masking
+            features['mask']
         )
-        result = FlashABBResult(seqs, pred)
+        result = FlashABBResult(seqs, pred, features['mask'])
         return result
