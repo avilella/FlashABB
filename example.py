@@ -1,16 +1,25 @@
 from flash_abb import pretrained
 import torch
 
-flabb = pretrained(model_to_use='flash-abb', device='cuda')
+flabb = pretrained(device='cuda')
 
-seq = [
-'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS', # The heavy chain (VH) needs to be the first element
-'DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK' # The light chain (VL) needs to be the second element
+seq1 = [
+    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS', # Heavy chain
+    'DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK' # Light chain
 ]
-seqs = [f'{seq[0]}|{seq[1]}']
-names = ['test1']
+seq2 = [
+    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVS', # Heavy chain
+    'DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK' # Light chain
+]
+seqs = [seq1, seq2]
+seqs = [f'{seq[0]}|{seq[1]}' for seq in seqs]
+names = ['test1', 'test2']
 
 with torch.no_grad():
     result = flabb(seqs)
 
-result.to_pdbs(names)
+# Coords returns a tensor of the predicted coordinates
+print(result.coords.shape)
+
+# Save predictions as PDB files
+result.to_pdbs(names, pdb_dir='sample_preds')

@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+from torch.nn.functional import one_hot
+from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 from .openfold.np import residue_constants
 from .structure_transformer import StructureModule
@@ -16,21 +18,32 @@ def atom14_to_atom37(position, aatype):
     return openfold_atom14_to_atom37(position.cpu(), batch)
 
 
-def tokenize(seqs):
-    heavy, light = seqs[0].split('|')
-    heavy_encoded = torch.tensor([residue_constants.restype_order_with_x[aa] for aa in heavy])
-    light_encoded = torch.tensor([residue_constants.restype_order_with_x[aa] for aa in light])
-    single_aa_type = torch.cat((heavy_encoded, light_encoded), dim=-1)
-    single_aa = torch.nn.functional.one_hot(single_aa_type, 21)
-    heavy_heavy = torch.ones_like(heavy_encoded)
-    light_heavy = torch.zeros_like(light_encoded)
-    is_heavy = torch.cat((heavy_heavy, light_heavy), dim=-1)
-    single_chain = torch.nn.functional.one_hot(is_heavy.long(), 2)
-    single = torch.cat((single_aa, single_chain), dim=-1)
-    heavy_index = torch.arange(len(heavy))
-    light_index = torch.arange(len(light)) + 500
-    res_index = torch.cat((heavy_index, light_index), dim=-1)
-    return single, single_aa_type, res_index
+def featurize(seqs, device=torch.device('cuda')):
+    features = {}
+    clean_seqs = [seq.replace('|', '') for seq in seqs]
+    chains = [seq.split('|') for seq in seqs]
+    features['aatype'] = [
+        torch.tensor([residue_constants.restype_order_with_x[aa] for aa in seq])
+        for seq in clean_seqs
+    ]
+    features['is_heavy'] = [
+        torch.tensor([1]*len(heavy) + [0]*len(light))
+        for heavy, light in chains
+    ]
+    features['single'] = [
+        torch.cat((
+            one_hot(aatype, 21),
+            one_hot(is_heavy, 2)
+        ), dim=-1).float()
+        for aatype, is_heavy in zip(features['aatype'], features['is_heavy'])
+    ]
+    features['res_idx'] = [
+        torch.cat((torch.arange(len(heavy)), torch.arange(len(light)) + 500), dim=-1)
+        for heavy, light in chains
+    ]
+    for key in features:
+        features[key] = pad_sequence(features[key], batch_first=True).to(device)
+    return features
 
 
 class FlashABB(nn.Module):
@@ -49,27 +62,27 @@ class FlashABBResult:
     def coords(self):
         return self.output['positions'][-1,...]
 
-    def to_pdbs(self, names):
+    def to_pdbs(self, names, pdb_dir='.'):
         from .openfold.np.protein import Protein, to_pdb
-
-        _, aatype, residue_idx = tokenize(self.seqs)
-        residue_idx = residue_idx.unsqueeze(0)
-        aatype = aatype.unsqueeze(0)
-        coords = self.coords[0]
-        coords = atom14_to_atom37(coords, aatype)
-        coords = coords.detach().cpu().numpy()
-        residue_idx = residue_idx[0,...].detach().cpu().numpy()
-        aatype = aatype[0,...].long().detach().cpu().numpy()
-        atom_mask = np.ones_like(coords[...,0])
-        b_factors = np.zeros_like(atom_mask)
-        prot = Protein(
-            aatype=aatype,
-            atom_positions=coords,
-            atom_mask=atom_mask,
-            residue_index=residue_idx + 1,
-            b_factors=b_factors,
-            chain_index=(residue_idx < 500).astype(int),
-        )
-        pdb_lines = to_pdb(prot)
-        with open(names[0] + '.pdb', 'w') as f:
-            f.write(pdb_lines)
+        for i, name in enumerate(names):
+            features = featurize(self.seqs)
+            residue_idx = features['res_idx'][i].unsqueeze(0)
+            aatype = features['aatype'][i].unsqueeze(0)
+            coords = self.coords[i]
+            coords = atom14_to_atom37(coords, aatype)
+            coords = coords.detach().cpu().numpy()
+            residue_idx = residue_idx[0,...].detach().cpu().numpy()
+            aatype = aatype[0,...].long().detach().cpu().numpy()
+            atom_mask = np.ones_like(coords[...,0])
+            b_factors = np.zeros_like(atom_mask)
+            prot = Protein(
+                aatype=aatype,
+                atom_positions=coords,
+                atom_mask=atom_mask,
+                residue_index=residue_idx + 1,
+                b_factors=b_factors,
+                chain_index=(residue_idx < 500).astype(int),
+            )
+            pdb_lines = to_pdb(prot)
+            with open(f'{pdb_dir}/{names[i]}.pdb', 'w') as f:
+                f.write(pdb_lines)

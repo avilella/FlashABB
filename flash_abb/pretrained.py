@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from .load_model import load_model
-from .model.flash_abb import tokenize, FlashABBResult
+from .model.flash_abb import featurize, FlashABBResult
 
 
 class pretrained:
@@ -15,6 +15,7 @@ class pretrained:
         self.flabb, self.hparams = load_model(model_to_use, random_init=random_init)
         self.flabb.to(self.used_device)
         self.flabb.eval() # Default
+        self.device = torch.device(device)
 
     def freeze(self):
         self.flabb.eval()
@@ -23,12 +24,12 @@ class pretrained:
         self.flabb.train()
 
     def __call__(self, seqs, batch_size=50):
-        # TODO: batching + masking
-        device = torch.device('cuda')
-        encoded_seqs, single_aa, res_idxs = tokenize(seqs)
-        encoded_seqs = encoded_seqs.unsqueeze(0).to(device).float()
-        res_idxs = res_idxs.unsqueeze(0).to(device)
-        single_aa = single_aa.unsqueeze(0).to(device)
-        pred = self.flabb.model({'single': encoded_seqs}, single_aa, res_idxs, None)
+        features = featurize(seqs, self.device)
+        pred = self.flabb.model(
+            {'single': features['single']},
+            features['aatype'],
+            features['res_idx'],
+            None # TODO: masking
+        )
         result = FlashABBResult(seqs, pred)
         return result
