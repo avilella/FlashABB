@@ -4,7 +4,7 @@ Installing:
 
 PyPi coming soon
 
-```
+```bash
 git clone git@github.com:Ellmen/flash-abb.git
 cd flash-abb
 pip install .
@@ -14,7 +14,7 @@ Usage:
 
 The following is also in `example.py` and can be used to create the structures in `sample_preds`
 
-```
+```python
 from flash_abb import pretrained
 import torch
 
