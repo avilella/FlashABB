@@ -4,8 +4,9 @@ import torch
 
 list_of_models = {
     "flash-abb":["https://zenodo.org/api/records/15920210/draft/files/rope_model.ckpt/content", "model.pt"],
+    "flash-abb_masked":["TODO", "masked_model.pt"],
 }
-flash_abb_models = ["flash-abb"]
+flash_abb_models = ["flash-abb", "flash-abb_masked"]
 
 
 def load_model(model_to_use="flash-abb", random_init=False, device='cpu'):
@@ -45,14 +46,14 @@ def download_model(model_to_use="flash-abb"):
         with open(model_path,'wb') as f: f.write(requests.get(file_w_weights).content)
 
 
-    return local_model_folder
+    return local_model_folder, file_model
 
 
 def fetch_flash_abb(model_to_use, random_init=False, device='cpu'):
 
     from .model.flash_abb import FlashABB
 
-    local_model_folder = download_model(model_to_use)
+    local_model_folder, file_model = download_model(model_to_use)
 
     with open(os.path.join(local_model_folder, 'params.yaml'), 'r', encoding='utf-8') as f:
         hparams = argparse.Namespace(**load(f, Loader=Loader)).model
@@ -60,7 +61,7 @@ def fetch_flash_abb(model_to_use, random_init=False, device='cpu'):
     flabb = FlashABB(hparams)
     if not random_init:
         ckpt = torch.load(
-            os.path.join(local_model_folder, 'model.pt'),
+            os.path.join(local_model_folder, file_model),
             map_location=torch.device(device),
             weights_only=False,
         )

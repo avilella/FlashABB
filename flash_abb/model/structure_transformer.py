@@ -37,6 +37,7 @@ from .openfold.np.residue_constants import (
     restype_atom14_rigid_group_positions,
     restype_atom14_to_rigid_group,
     restype_rigid_group_default_frame,
+    restype_order_with_x,
 )
 from .openfold.utils.feats import (
     frames_and_literature_positions_to_atom14_pos,
@@ -439,6 +440,10 @@ class StructureModule(nn.Module):
         """
         s = evoformer_output_dict["single"]
         s_tokens = s
+        # Hack to ensure that the model still fills in the backbone for X residues
+        gly_idx = restype_order_with_x['G']
+        unk_idx = restype_order_with_x['X']
+        aatype[aatype==unk_idx] = gly_idx
 
         if mask is None:
             # [*, N]
