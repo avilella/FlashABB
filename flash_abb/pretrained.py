@@ -23,6 +23,16 @@ class pretrained:
     def unfreeze(self):
         self.flabb.train()
 
+    def from_features(self, features, batch_size=50):
+        pred = self.flabb.model(
+            {'single': features['single']},
+            features['aatype'],
+            features['res_idx'],
+            features['mask']
+        )
+        result = FlashABBResult(seqs, pred, features['mask'])
+        return result
+
     def __call__(self, seqs, batch_size=50):
         features = featurize(seqs, self.device)
         pred = self.flabb.model(

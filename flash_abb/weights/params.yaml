@@ -1,0 +1,21 @@
+model:
+  # edge_chain_feature: true
+  use_plddt: true
+  use_original_sm: true
+  c_ipa: 16
+  c_resnet: 256
+  c_s: 23
+  rel_pos_dim: 64
+  dropout_rate: 0.1
+  embed_dim: 128
+  epsilon: 1.0e-07
+  inf: 10000000.0
+  no_angles: 7
+  no_blocks: 8
+  no_heads_ipa: 12
+  no_qk_points: 4
+  no_resnet_blocks: 2
+  no_transition_layers: 1
+  no_v_points: 8
+  rotation_propagation: true
+  trans_scale_factor: 1

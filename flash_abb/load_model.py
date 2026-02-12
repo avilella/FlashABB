@@ -3,8 +3,8 @@ from yaml import load, Loader
 import torch
 
 list_of_models = {
-    "flash-abb":["https://zenodo.org/api/records/15920210/draft/files/rope_model.ckpt/content", "model.pt"],
-    "flash-abb_masked":["TODO", "masked_model.pt"],
+    "flash-abb":"flabb_weights.pt",
+    "flash-abb_masked":"flabb_masked_weights.pt",
 }
 flash_abb_models = ["flash-abb", "flash-abb_masked"]
 
@@ -24,36 +24,12 @@ def load_model(model_to_use="flash-abb", random_init=False, device='cpu'):
     return flabb, hparams
 
 
-def download_model(model_to_use="flash-abb"):
-    """
-    If not already downloaded, download model inside environment.
-    """
-
-    local_model_folder = os.path.join(os.path.dirname(__file__), "model-weights-{}".format(model_to_use))
-    os.makedirs(local_model_folder, exist_ok=True)
-
-    file_w_weights, file_model = list_of_models[model_to_use] # modify list of models
-
-    if not os.path.isfile(os.path.join(local_model_folder, file_model)):
-        print("Downloading model ...")
-        # tmp_file = os.path.join(local_model_folder, "tmp.tar.gz")
-
-        # with open(tmp_file,'wb') as f: f.write(requests.get(file_w_weights).content)
-
-        # subprocess.run(["tar", "-zxvf", tmp_file, "-C", local_model_folder], check = True) 
-        # os.remove(tmp_file)
-        model_path = os.path.join(local_model_folder, file_model)
-        with open(model_path,'wb') as f: f.write(requests.get(file_w_weights).content)
-
-
-    return local_model_folder, file_model
-
-
 def fetch_flash_abb(model_to_use, random_init=False, device='cpu'):
 
     from .model.flash_abb import FlashABB
 
-    local_model_folder, file_model = download_model(model_to_use)
+    local_model_folder = os.path.join(os.path.dirname(__file__), "weights")
+    file_model = list_of_models[model_to_use]
 
     with open(os.path.join(local_model_folder, 'params.yaml'), 'r', encoding='utf-8') as f:
         hparams = argparse.Namespace(**load(f, Loader=Loader)).model
@@ -65,8 +41,6 @@ def fetch_flash_abb(model_to_use, random_init=False, device='cpu'):
             map_location=torch.device(device),
             weights_only=False,
         )
-        flabb.load_state_dict(
-            ckpt['state_dict']
-        )
+        flabb.load_state_dict(ckpt)
 
     return flabb, hparams
