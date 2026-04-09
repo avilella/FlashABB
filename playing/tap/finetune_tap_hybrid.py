@@ -1,4 +1,4 @@
-"""End-to-end finetuning of AbLang2/FlashABB encoders with TAP regression head."""
+"""Train hybrid TAP regressor using concatenated FlashABB + AbLang2 embeddings."""
 
 import os
 import sys
@@ -8,6 +8,7 @@ import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
@@ -17,85 +18,105 @@ DIR = os.path.dirname(__file__)
 
 
 # ---------------------------------------------------------------------------
-# Encoder wrappers (nn.Module so parameters are registered for the optimizer)
+# Encoders (copied from finetune_tap.py)
 # ---------------------------------------------------------------------------
 
 class FlashABBEncoder(nn.Module):
     def __init__(self, device):
         super().__init__()
-        from flash_abb.load_model import load_model
+        from flash_abb.util.model import load_model
         self.flabb, _ = load_model("flash-abb")
         self.flabb.to(device)
-        self._device = device
+        self.device = device
         self.embed_dim = 128
 
     def forward(self, seqs):
         """Returns per-residue embeddings and mask."""
-        from flash_abb.model.flash_abb import featurize
-        features = featurize(seqs, self._device)
-        output = self.flabb.model(
-            {"single": features["single"]},
-            features["aatype"],
-            features["res_idx"],
-            features["mask"],
-        )
-        single = output["single"]  # (B, L, 128)
-        mask = features["mask"]  # (B, L)
+        from flash_abb.util.model import featurize
+        batch = featurize(seqs, device=self.device)
+        with torch.no_grad():
+            out = self.flabb(batch)
+        single = out.output["single"]  # (batch, seq_len, 128)
+        mask = batch["aatype_pad_mask"]  # (batch, seq_len)
         return single, mask
+
+    def load_state_dict(self, state_dict):
+        self.flabb.load_state_dict(state_dict)
+
+    def state_dict(self):
+        return self.flabb.state_dict()
+
+    def parameters(self):
+        return self.flabb.parameters()
 
 
 class AbLang2Encoder(nn.Module):
     def __init__(self, device):
         super().__init__()
         import ablang2
-        ablang = ablang2.pretrained("ablang2-paired", device=device)
-        self.AbRep = ablang.AbRep  # nn.Module — registered as submodule
-        self._tokenizer = ablang.tokenizer
-        self._device = device
+        self.ablang = ablang2.pretrained("ablang2-paired", device=device)
+        self.device = device
         self.embed_dim = 480
 
     def forward(self, seqs):
         """Returns per-residue embeddings and mask."""
-        tokenized = self._tokenizer(
-            seqs, pad=True, w_extra_tkns=False, device=self._device
+        tokenized = self.ablang.tokenizer(
+            seqs, pad=True, w_extra_tkns=False, device=self.device
         )
-        rescoding = self.AbRep(tokenized).last_hidden_states  # (B, L, 480)
+        with torch.no_grad():
+            rescoding = self.ablang.AbRep(tokenized).last_hidden_states  # (batch, seq_len, 480)
         # Create mask from tokenized sequences (non-padding positions)
         mask = tokenized != 0  # Assuming 0 is padding token
         return rescoding, mask
 
+    def load_state_dict(self, state_dict):
+        self.ablang.AbRep.load_state_dict(state_dict)
+
+    def state_dict(self):
+        return self.ablang.AbRep.state_dict()
+
+    def parameters(self):
+        return self.ablang.AbRep.parameters()
+
 
 # ---------------------------------------------------------------------------
-# Per-residue TAP regressor
+# Hybrid Model
 # ---------------------------------------------------------------------------
 
-class TAPRegressor(nn.Module):
-    """Per-residue MLP that predicts TAP contributions, then sum pools."""
-    def __init__(self, input_dim, hidden_dim=256):
+class HybridTAPRegressor(nn.Module):
+    """Concatenates per-residue embeddings, applies MLP, then sum pools."""
+    def __init__(self, flabb_dim=128, ablang_dim=480, hidden_dim=256):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        combined_dim = flabb_dim + ablang_dim  # 608
+
+        # Per-residue fusion MLP that outputs TAP properties
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(128, 4),  # 4 TAP properties per residue
+            nn.Linear(128, 4),  # Output 4 TAP properties per residue
         )
 
-    def forward(self, per_residue_emb, mask):
+    def forward(self, flabb_emb, ablang_emb, mask):
         """
         Args:
-            per_residue_emb: (batch, seq_len, input_dim)
-            mask: (batch, seq_len)
+            flabb_emb: (batch, seq_len, 128) per-residue FlashABB embeddings
+            ablang_emb: (batch, seq_len, 480) per-residue AbLang2 embeddings
+            mask: (batch, seq_len) padding mask
         Returns:
-            (batch, 4) summed TAP predictions
+            (batch, 4) predictions
         """
-        # Apply MLP to each residue
-        per_residue_tap = self.mlp(per_residue_emb)  # (batch, seq_len, 4)
+        # Concatenate per-residue embeddings
+        combined = torch.cat([flabb_emb, ablang_emb], dim=-1)  # (batch, seq_len, 608)
 
-        # Masked sum pooling
-        mask_expanded = mask.unsqueeze(-1).float()  # (batch, seq_len, 1)
+        # Apply fusion MLP to each residue to get per-residue TAP predictions
+        per_residue_tap = self.fusion_mlp(combined)  # (batch, seq_len, 4)
+
+        # Masked sum pooling - sum TAP contributions from all residues
+        mask_expanded = mask.unsqueeze(-1)  # (batch, seq_len, 1)
         masked_tap = per_residue_tap * mask_expanded  # (batch, seq_len, 4)
         summed_tap = masked_tap.sum(dim=1)  # (batch, 4)
 
@@ -148,14 +169,16 @@ def split_indices(n, seed=SEED):
 # Training
 # ---------------------------------------------------------------------------
 
-def train_finetune(
-    encoder,
+def train_hybrid(
+    flabb_encoder,
+    ablang_encoder,
     head,
     train_set,
     val_set,
     tgt_mean,
     tgt_std,
-    encoder_lr=1e-5,
+    flabb_lr=1e-5,
+    ablang_lr=1e-5,
     head_lr=1e-3,
     epochs=50,
     patience=10,
@@ -173,59 +196,80 @@ def train_finetune(
     tgt_mean_d = tgt_mean.to(device)
     tgt_std_d = tgt_std.to(device)
 
+    # Separate optimizers for each encoder + head
     optimizer = torch.optim.Adam([
-        {"params": encoder.parameters(), "lr": encoder_lr},
+        {"params": flabb_encoder.parameters(), "lr": flabb_lr},
+        {"params": ablang_encoder.parameters(), "lr": ablang_lr},
         {"params": head.parameters(), "lr": head_lr},
     ])
     criterion = nn.MSELoss()
 
     best_val_loss = float("inf")
-    best_encoder_state = None
+    best_flabb_state = None
+    best_ablang_state = None
     best_head_state = None
     wait = 0
 
     for epoch in range(1, epochs + 1):
-        encoder.train()
+        flabb_encoder.train()
+        ablang_encoder.train()
         head.train()
         train_loss = 0.0
         n_train = 0
         n_batches = len(train_loader)
+
         for batch_idx, (seqs, targets) in enumerate(train_loader, 1):
             targets_norm = (targets.to(device) - tgt_mean_d) / tgt_std_d
-            per_residue_emb, mask = encoder(seqs)
-            pred = head(per_residue_emb, mask)
+
+            # Get per-residue embeddings from both encoders
+            flabb_emb, flabb_mask = flabb_encoder(seqs)
+            ablang_emb, ablang_mask = ablang_encoder(seqs)
+
+            # Use FlashABB mask (more reliable for antibody sequences)
+            mask = flabb_mask.float()
+
+            # Hybrid prediction
+            pred = head(flabb_emb, ablang_emb, mask)
             loss = criterion(pred, targets_norm)
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
             batch_loss = loss.item()
             train_loss += batch_loss * len(seqs)
             n_train += len(seqs)
             print(f"\r  Epoch {epoch:3d}  batch {batch_idx}/{n_batches}  loss={batch_loss:.4f}", end="", flush=True)
+
         print()
         train_loss /= n_train
 
-        # --- validation with per-property metrics in original scale ----------
-        encoder.eval()
+        # Validation
+        flabb_encoder.eval()
+        ablang_encoder.eval()
         head.eval()
         val_preds, val_actuals = [], []
+
         with torch.no_grad():
             for seqs, targets in val_loader:
-                per_residue_emb, mask = encoder(seqs)
-                pred_norm = head(per_residue_emb, mask)
+                flabb_emb, flabb_mask = flabb_encoder(seqs)
+                ablang_emb, ablang_mask = ablang_encoder(seqs)
+                mask = flabb_mask.float()
+                pred_norm = head(flabb_emb, ablang_emb, mask)
                 pred = pred_norm * tgt_std_d + tgt_mean_d
                 val_preds.append(pred.cpu())
                 val_actuals.append(targets)
+
         val_preds = torch.cat(val_preds)
         val_actuals = torch.cat(val_actuals)
 
-        # normalised MSE for early stopping (same scale as training loss)
+        # Validation loss (normalized)
         val_loss = criterion(
             (val_preds - tgt_mean) / tgt_std,
             (val_actuals - tgt_mean) / tgt_std,
         ).item()
 
-        # per-property MAE & R²
+        # Per-property MAE & R²
         maes, r2s = [], []
         for i in range(len(TAP_COLS)):
             p, a = val_preds[:, i], val_actuals[:, i]
@@ -251,9 +295,11 @@ def train_finetune(
                 log[f"val/R2_{col}"] = r2
             wandb.log(log, step=epoch)
 
+        # Early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_encoder_state = copy.deepcopy(encoder.state_dict())
+            best_flabb_state = copy.deepcopy(flabb_encoder.state_dict())
+            best_ablang_state = copy.deepcopy(ablang_encoder.state_dict())
             best_head_state = copy.deepcopy(head.state_dict())
             wait = 0
         else:
@@ -262,27 +308,34 @@ def train_finetune(
                 print(f"  Early stopping at epoch {epoch}")
                 break
 
-    encoder.load_state_dict(best_encoder_state)
+    # Load best states
+    flabb_encoder.load_state_dict(best_flabb_state)
+    ablang_encoder.load_state_dict(best_ablang_state)
     head.load_state_dict(best_head_state)
-    return encoder, head
+
+    return flabb_encoder, ablang_encoder, head
 
 
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate(encoder, head, test_set, tgt_mean, tgt_std, batch_size=16, device="cuda"):
+def evaluate(flabb_encoder, ablang_encoder, head, test_set, tgt_mean, tgt_std, batch_size=16, device="cuda"):
     loader = DataLoader(test_set, batch_size=batch_size, collate_fn=seq_collate)
     tgt_mean_d = tgt_mean.to(device)
     tgt_std_d = tgt_std.to(device)
 
-    encoder.eval()
+    flabb_encoder.eval()
+    ablang_encoder.eval()
     head.eval()
+
     all_pred, all_actual = [], []
     with torch.no_grad():
         for seqs, targets in loader:
-            per_residue_emb, mask = encoder(seqs)
-            pred_norm = head(per_residue_emb, mask)
+            flabb_emb, flabb_mask = flabb_encoder(seqs)
+            ablang_emb, ablang_mask = ablang_encoder(seqs)
+            mask = flabb_mask.float()
+            pred_norm = head(flabb_emb, ablang_emb, mask)
             pred = pred_norm * tgt_std_d + tgt_mean_d
             all_pred.append(pred.cpu())
             all_actual.append(targets)
@@ -303,64 +356,116 @@ def evaluate(encoder, head, test_set, tgt_mean, tgt_std, batch_size=16, device="
 
 
 # ---------------------------------------------------------------------------
-# Run one encoder
+# Main
 # ---------------------------------------------------------------------------
 
-def run_one(encoder_name, display_name, device, use_wandb=False, **train_kwargs):
-    print(f"\n{'='*50}")
-    print(f"  {display_name}  (finetuning)")
-    print(f"{'='*50}")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--flabb_lr", type=float, default=1e-5)
+    parser.add_argument("--ablang_lr", type=float, default=1e-5)
+    parser.add_argument("--head_lr", type=float, default=1e-3)
+    parser.add_argument("--wandb", action="store_true")
+    args = parser.parse_args()
 
-    if use_wandb:
+    print("\n" + "="*70)
+    print("  Hybrid FlashABB + AbLang2 TAP Regression")
+    print("="*70)
+
+    if args.wandb:
         import wandb
         wandb.init(
-            project="tap-finetune",
-            name=display_name,
-            config={"encoder": encoder_name, **train_kwargs},
+            project="tap-regression",
+            name="Hybrid-FlashABB-AbLang2",
+            config=vars(args),
         )
 
+    # Load data
+    print("\nLoading data...")
     seqs, targets = load_data()
     train_idx, val_idx, test_idx = split_indices(len(seqs))
 
     train_seqs = [seqs[i] for i in train_idx]
     val_seqs = [seqs[i] for i in val_idx]
     test_seqs = [seqs[i] for i in test_idx]
-    train_tgt, val_tgt, test_tgt = targets[train_idx], targets[val_idx], targets[test_idx]
 
-    tgt_mean = train_tgt.mean(dim=0)
-    tgt_std = train_tgt.std(dim=0)
+    train_targets = targets[train_idx]
+    val_targets = targets[val_idx]
+    test_targets = targets[test_idx]
 
-    train_set = SeqDataset(train_seqs, train_tgt)
-    val_set = SeqDataset(val_seqs, val_tgt)
-    test_set = SeqDataset(test_seqs, test_tgt)
+    # Normalize targets
+    tgt_mean = train_targets.mean(dim=0)
+    tgt_std = train_targets.std(dim=0)
 
-    if encoder_name == "flabb":
-        encoder = FlashABBEncoder(device)
-    else:
-        encoder = AbLang2Encoder(device)
-    head = TAPRegressor(encoder.embed_dim).to(device)
+    train_set = SeqDataset(train_seqs, train_targets)
+    val_set = SeqDataset(val_seqs, val_targets)
+    test_set = SeqDataset(test_seqs, test_targets)
 
-    encoder, head = train_finetune(
-        encoder, head, train_set, val_set, tgt_mean, tgt_std,
-        device=device, use_wandb=use_wandb, **train_kwargs,
+    print(f"  Train: {len(train_set)}")
+    print(f"  Val:   {len(val_set)}")
+    print(f"  Test:  {len(test_set)}")
+
+    # Create encoders and head
+    print("\nInitializing encoders...")
+    flabb_encoder = FlashABBEncoder(args.device)
+    ablang_encoder = AbLang2Encoder(args.device)
+    head = HybridTAPRegressor(flabb_dim=128, ablang_dim=480, hidden_dim=256).to(args.device)
+
+    print(f"  FlashABB embedding dim: {flabb_encoder.embed_dim}")
+    print(f"  AbLang2 embedding dim:  {ablang_encoder.embed_dim}")
+    print(f"  Combined dim: {flabb_encoder.embed_dim + ablang_encoder.embed_dim}")
+
+    # Train
+    print("\nTraining...")
+    flabb_encoder, ablang_encoder, head = train_hybrid(
+        flabb_encoder,
+        ablang_encoder,
+        head,
+        train_set,
+        val_set,
+        tgt_mean,
+        tgt_std,
+        flabb_lr=args.flabb_lr,
+        ablang_lr=args.ablang_lr,
+        head_lr=args.head_lr,
+        epochs=args.epochs,
+        patience=args.patience,
+        batch_size=args.batch_size,
+        device=args.device,
+        use_wandb=args.wandb,
     )
 
-    ckpt_path = os.path.join(DIR, f"tap_ft_{encoder_name}.pt")
-    torch.save({
-        "encoder_state": encoder.state_dict(),
-        "head_state": head.state_dict(),
-        "tgt_mean": tgt_mean,
-        "tgt_std": tgt_std,
-        "input_dim": encoder.embed_dim,
-    }, ckpt_path)
-    print(f"  Saved to {ckpt_path}")
-
-    results = evaluate(
-        encoder, head, test_set, tgt_mean, tgt_std,
-        batch_size=train_kwargs.get("batch_size", 16), device=device,
+    # Save checkpoint
+    ckpt_path = os.path.join(DIR, "tap_ft_hybrid.pt")
+    torch.save(
+        {
+            "flabb_encoder_state": flabb_encoder.state_dict(),
+            "ablang_encoder_state": ablang_encoder.state_dict(),
+            "head_state": head.state_dict(),
+            "tgt_mean": tgt_mean,
+            "tgt_std": tgt_std,
+        },
+        ckpt_path,
     )
+    print(f"\nSaved checkpoint to {ckpt_path}")
 
-    if use_wandb:
+    # Evaluate on test set
+    print("\nEvaluating on test set...")
+    results = evaluate(flabb_encoder, ablang_encoder, head, test_set, tgt_mean, tgt_std,
+                      batch_size=args.batch_size, device=args.device)
+
+    print("\nTest Results:")
+    print("-" * 70)
+    print(f"{'Property':<12} {'MSE':>12} {'MAE':>12} {'R²':>12}")
+    print("-" * 70)
+    for col in TAP_COLS:
+        r = results[col]
+        print(f"{col:<12} {r['MSE']:>12.4f} {r['MAE']:>12.4f} {r['R2']:>12.4f}")
+
+    if args.wandb:
         import wandb
         test_log = {}
         for col, r in results.items():
@@ -369,55 +474,6 @@ def run_one(encoder_name, display_name, device, use_wandb=False, **train_kwargs)
             test_log[f"test/R2_{col}"] = r["R2"]
         wandb.log(test_log)
         wandb.finish()
-
-    return results
-
-
-def print_comparison(all_results):
-    print(f"\n{'='*70}")
-    print("  Comparison (finetuned)")
-    print(f"{'='*70}")
-    header = f"{'Property':<10}"
-    for name in all_results:
-        header += f"  {name+' MSE':>14}  {name+' MAE':>14}  {name+' R²':>14}"
-    print(header)
-    print("-" * len(header))
-    for col in TAP_COLS:
-        row = f"{col:<10}"
-        for name in all_results:
-            r = all_results[name][col]
-            row += f"  {r['MSE']:>14.4f}  {r['MAE']:>14.4f}  {r['R2']:>14.4f}"
-        print(row)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--encoder", choices=["ablang2", "flabb", "both"], default="both")
-    parser.add_argument("--encoder_lr", type=float, default=1e-5)
-    parser.add_argument("--head_lr", type=float, default=1e-3)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--patience", type=int, default=10)
-    parser.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases")
-    args = parser.parse_args()
-
-    train_kwargs = dict(
-        encoder_lr=args.encoder_lr,
-        head_lr=args.head_lr,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        patience=args.patience,
-    )
-
-    all_results = {}
-    if args.encoder in ("ablang2", "both"):
-        all_results["AbLang2"] = run_one("ablang2", "AbLang2", args.device, use_wandb=args.wandb, **train_kwargs)
-    if args.encoder in ("flabb", "both"):
-        all_results["FlashABB"] = run_one("flabb", "FlashABB", args.device, use_wandb=args.wandb, **train_kwargs)
-
-    if all_results:
-        print_comparison(all_results)
 
 
 if __name__ == "__main__":
