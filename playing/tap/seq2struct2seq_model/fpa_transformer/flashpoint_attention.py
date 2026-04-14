@@ -9,13 +9,14 @@ from torch.nn.attention.flex_attention import BlockMask, flex_attention, _score_
 from einops import rearrange
 from rotary_embedding_torch import RotaryEmbedding
 
-from .openfold.model.primitives import (
+# Use openfold from flash_abb instead of local copy
+from flash_abb.model.openfold.model.primitives import (
     LayerNorm,
     Linear,
     ipa_point_weights_init_,
 )
-from .openfold.utils.rigid_utils import Rigid, Rotation
-from .openfold.utils.tensor_utils import (
+from flash_abb.model.openfold.utils.rigid_utils import Rigid, Rotation
+from flash_abb.model.openfold.utils.tensor_utils import (
     dict_multimap,
     flatten_final_dims,
     permute_final_dims,

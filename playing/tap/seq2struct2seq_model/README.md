@@ -27,7 +27,7 @@ The seq2struct2seq model uses a 3-stage pipeline:
 - `fpa_transformer/` - StructureModule and FlashpointAttention implementation
   - `internal_structure_transformer.py` - Main StructureModule class
   - `flashpoint_attention.py` - FlashpointAttention (IPA) blocks
-  - `openfold/` - OpenFold utilities for structure processing
+  - Note: Uses openfold utilities from `flash_abb.model.openfold` (no duplication)
 
 ## Usage
 
