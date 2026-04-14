@@ -300,7 +300,7 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--encoder_lr", type=float, default=1e-5)
     parser.add_argument("--head_lr", type=float, default=1e-3)
-    parser.add_argument("--batch_size", type=int, default=8, help="Smaller batch size due to structure computation")
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--num_layers", type=int, default=6, help="Number of StructureModule layers")

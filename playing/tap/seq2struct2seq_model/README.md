@@ -35,10 +35,10 @@ The seq2struct2seq model uses a 3-stage pipeline:
 
 ```bash
 # Finetune both StructureModule and TAP head
-python finetune_tap_seq2struct2seq.py --device cuda --batch_size 8
+python finetune_tap_seq2struct2seq.py --device cuda
 
 # Freeze StructureModule, train only TAP head (faster, less memory)
-python finetune_tap_seq2struct2seq.py --freeze_encoder --batch_size 16
+python finetune_tap_seq2struct2seq.py --freeze_encoder
 
 # With W&B logging
 python finetune_tap_seq2struct2seq.py --wandb
@@ -51,7 +51,7 @@ python finetune_tap_seq2struct2seq.py --wandb
 python eval_finetune_seq2struct2seq.py --device cuda
 
 # Evaluate on therapeutic antibodies
-python eval_finetune_seq2struct2seq.py --therapeutic
+python eval_finetune_seq2struct2seq.py --therapeutic --device cuda
 ```
 
 ## Hyperparameters
@@ -66,7 +66,7 @@ Default configuration (from pretrained model):
 Training parameters:
 - `encoder_lr`: 1e-5 (learning rate for StructureModule)
 - `head_lr`: 1e-3 (learning rate for TAP head)
-- `batch_size`: 8 (smaller due to structure computation overhead)
+- `batch_size`: 16 (same as other models)
 - `epochs`: 50
 - `patience`: 10 (early stopping)
 
@@ -76,7 +76,7 @@ Training parameters:
 2. **Invariant Point Attention**: IPA blocks explicitly model geometric relationships
 3. **Pretrained on sequence recovery**: Model was pretrained to recover masked sequences given structure
 4. **Larger architecture**: 512-dim embeddings vs 128 (FlashABB) or 480 (AbLang2)
-5. **Computational cost**: Slower due to structure prediction + IPA (recommend smaller batch sizes)
+5. **Computational cost**: Slower due to IPA computation (FlashABB structure prediction is memory-efficient)
 
 ## Expected Performance
 
