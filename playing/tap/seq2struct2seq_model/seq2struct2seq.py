@@ -17,14 +17,14 @@ from .fpa_transformer.internal_structure_transformer import StructureModule
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-from transformers import RobertaTokenizer
+# from transformers import RobertaTokenizer
 
-CACHED_TOKENIZERS = {}
+# CACHED_TOKENIZERS = {}
 
-def load_cached_tokenizer(tokenizer_key, cache=True):
-    if not cache or tokenizer_key not in CACHED_TOKENIZERS:
-        CACHED_TOKENIZERS[tokenizer_key] = RobertaTokenizer.from_pretrained(tokenizer_key)
-    return CACHED_TOKENIZERS[tokenizer_key]
+# def load_cached_tokenizer(tokenizer_key, cache=True):
+#     if not cache or tokenizer_key not in CACHED_TOKENIZERS:
+#         CACHED_TOKENIZERS[tokenizer_key] = RobertaTokenizer.from_pretrained(tokenizer_key)
+#     return CACHED_TOKENIZERS[tokenizer_key]
 
 # 3D BERT
 class BERTCoords(nn.Module):
