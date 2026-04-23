@@ -12,9 +12,9 @@ cd flash-abb
 pip install .
 ```
 
-Usage:
+## Structure prediction
 
-The following is also in `example.py` and can be used to create the structures in `sample_preds`
+The following is also in `example.py` and can be used to create the structures in `sample_preds`.
 
 ```python
 from flash_abb import pretrained
@@ -22,24 +22,53 @@ import torch
 
 flabb = pretrained(device='cuda')
 
-seq1 = [
-    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS', # Heavy chain
-    'DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK' # Light chain
+# Sequences in heavy|light format
+seqs = [
+    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS|DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK',
+    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVS|DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK',
 ]
-seq2 = [
-    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVS', # Heavy chain
-    'DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK' # Light chain
-]
-seqs = [seq1, seq2]
-seqs = [f'{seq[0]}|{seq[1]}' for seq in seqs]
-names = ['test1', 'test2']
 
 with torch.no_grad():
     result = flabb(seqs)
 
-# Coords returns a tensor of the predicted coordinates
-print(result.coords.shape)
+print(result.coords.shape)          # (2, n_residues, 37, 3)
+print(result.bb_coords.shape)       # (2, n_residues, 4, 3)
 
-# Save predictions as PDB files
-result.to_pdbs(names, pdb_dir='sample_preds')
+result.to_pdbs(['ab1', 'ab2'], pdb_dir='sample_preds')
+```
+
+## Developability scoring (FlashTAP)
+
+FlashTAP predicts four [TAP](https://www.tandfonline.com/doi/full/10.4161/mabs.1.5.9551) developability scores: PSH, PPC, PNC, and SFvCSP.
+
+```python
+from flash_abb import pretrained_tap
+
+tap = pretrained_tap(device='cuda')
+
+seqs = [
+    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS|DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK',
+]
+
+result = tap(seqs)
+print(result.scores)    # [{'PSH': ..., 'PPC': ..., 'PNC': ..., 'SFvCSP': ...}]
+print(result.tensor)    # (1, 4) raw score tensor
+```
+
+## Structure-aware embeddings (FlashABB-SSS)
+
+FlashABB-SSS (seq2struct2seq) produces per-residue embeddings that combine sequence and predicted 3D structure. These can be used as features for downstream tasks.
+
+```python
+from flash_abb import pretrained_sss
+
+sss = pretrained_sss(device='cuda')
+
+seqs = [
+    'EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQGRVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS|DIQLTQSPLSLPVTLGQPASISCRSSQSLEASDTNIYLSWFQQRPGQSPRRLIYKISNRDSGVPDRFSGSGSGTHFTLRISRVEADDVAVYYCMQGTHWPPAFGQGTKVDIK',
+]
+
+result = sss(seqs)
+print(result.embeddings.shape)  # (1, n_residues, 128)
+print(result.mask.shape)        # (1, n_residues)
 ```
