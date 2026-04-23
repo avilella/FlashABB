@@ -11,8 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 
 # from flash_abb.load_model import load_model
 from flash_abb import pretrained
-import ablang2
-
+from .tokenizer import ABtokenizer
 from .fpa_transformer.internal_structure_transformer import StructureModule
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -44,13 +43,8 @@ class BERTCoords(nn.Module):
         # Load FlashABB model
         # self.folder, _ = load_model("flash-abb")
         self.folder = pretrained()
-        # Load AbLang2 for tokenization
-        self.ablang = ablang2.pretrained(model_to_use='ablang2-paired', random_init=False, device=self.folder.device)
-        self.alphabet = self.ablang.tokenizer
-        # Freeze base models
-        # self.folder.requires_grad_(False)
+        self.alphabet = ABtokenizer()
         self.folder.flabb.requires_grad_(False)
-        self.ablang.AbLang.requires_grad_(False)
         self.encoder = StructureModule(
             no_blocks = self.num_layers,
             embed_dim = self.emb_size,
