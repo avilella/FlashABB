@@ -14,7 +14,7 @@ setup(
     author="Isaac Ellmen",
     maintainer='Isaac Ellmen',
     maintainer_email='isaac.ellmen@stats.ox.ac.uk',
-    url="github.com/Ellmen/flash-abb",
+    url="https://github.com/oxpig/FlashABB",
     include_package_data=True,
     packages=find_packages(include=('flash_abb', 'flash_abb.*')),
     install_requires=[
