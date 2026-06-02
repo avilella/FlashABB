@@ -4,7 +4,11 @@
 
 Installation:
 
-PyPi coming soon
+```bash
+pip install flash-abb
+```
+
+Or from source:
 
 ```bash
 git clone git@github.com:oxpig/FlashABB.git

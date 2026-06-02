@@ -6,9 +6,9 @@ with open("README.md", "r", encoding="utf-8") as f:
     
 setup(
     name='flash-abb',
-    version='0.0.2',
+    version='0.0.3',
     license='BSD 3-clause license',
-    description='Flash-ABB: modelling antibody structures at the speed of language',
+    description='FlashABB: modelling antibody structures at the speed of language',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author="Isaac Ellmen",

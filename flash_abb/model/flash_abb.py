@@ -99,7 +99,7 @@ class FlashABBResult:
                 aatype=aatype,
                 atom_positions=coords,
                 atom_mask=atom_mask,
-                residue_index=residue_idx + 1,
+                residue_index=np.where(residue_idx >= 500, residue_idx - 499, residue_idx + 1),
                 b_factors=b_factors,
                 chain_index=(residue_idx >= 500).astype(int),
             )
