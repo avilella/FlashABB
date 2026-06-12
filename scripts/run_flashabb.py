@@ -4,6 +4,7 @@ import os
 import sys
 import csv
 import hashlib
+import json
 
 def log(msg, verbose=False, is_verbose_msg=False):
     """
@@ -15,7 +16,12 @@ def log(msg, verbose=False, is_verbose_msg=False):
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate FlashTAP developability measures for heavy and light chain sequences.")
-    parser.add_argument('-i', '--inputfile', required=True, help="Input CSV file containing sequence data.")
+    
+    # Use a mutually exclusive group to require either a file or a JSON string
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('-i', '--inputfile', help="Input CSV file containing sequence data.")
+    input_group.add_argument('--json', help="Input JSON string containing sequence data. Prints results to STDOUT as JSON.")
+    
     parser.add_argument('--tag', default='fltp', help="Output file tag (default: fltp)")
     parser.add_argument('--outdir', default=None, help="Output directory (default: same as input file)")
     parser.add_argument('--verbose', action='store_true', help="Print detailed processing logs to stderr")
@@ -23,59 +29,89 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine input paths
-    input_file = args.inputfile
-    if not os.path.isfile(input_file):
-        log(f"Error: Input file '{input_file}' does not exist.", args.verbose)
-        sys.exit(1)
-
-    input_dir, input_basename = os.path.split(input_file)
-    input_name, _ = os.path.splitext(input_basename)
-
-    # Determine output paths
-    out_dir = args.outdir if args.outdir is not None else input_dir
-    if out_dir and not os.path.exists(out_dir):
-        log(f"Creating output directory: {out_dir}", args.verbose, is_verbose_msg=True)
-        os.makedirs(out_dir, exist_ok=True)
-
-    out_filename = f"{input_name}.{args.tag}.csv"
-    out_filepath = os.path.join(out_dir, out_filename) if out_dir else out_filename
-    out_filepath = os.path.abspath(out_filepath)
-
-    # Check if output already exists and we shouldn't refresh
-    if not args.refresh:
-        if os.path.exists(out_filepath) and os.path.getsize(out_filepath) > 0:
-            log("Output file already exists and is non-empty. Skipping calculation.", args.verbose, is_verbose_msg=True)
-            # Print strictly the path to STDOUT and exit
-            print(out_filepath)
-            sys.exit(0)
-
-    # Read input CSV
-    log(f"Reading input file: {input_file}", args.verbose, is_verbose_msg=True)
     data = []
-    with open(input_file, 'r', newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        fieldnames = set(reader.fieldnames or [])
-        
-        # Dynamically determine the column names based on the headers
-        name_col = 'name' if 'name' in fieldnames else 'Sequence_Id' if 'Sequence_Id' in fieldnames else None
-        heavy_col = 'heavy' if 'heavy' in fieldnames else 'H_Full' if 'H_Full' in fieldnames else None
-        light_col = 'light' if 'light' in fieldnames else 'L_Full' if 'L_Full' in fieldnames else None
+    out_filepath = None
 
-        if not (name_col and heavy_col and light_col):
-            log("Error: Input CSV must contain columns for name ('name' or 'Sequence_Id'), "
-                "heavy chain ('heavy' or 'H_Full'), and light chain ('light' or 'L_Full').", args.verbose)
+    # Handle file input
+    if args.inputfile:
+        input_file = args.inputfile
+        if not os.path.isfile(input_file):
+            log(f"Error: Input file '{input_file}' does not exist.", args.verbose)
             sys.exit(1)
 
-        for row in reader:
-            data.append({
-                'name': row[name_col].strip(),
-                'heavy': row[heavy_col].strip(),
-                'light': row[light_col].strip()
-            })
+        input_dir, input_basename = os.path.split(input_file)
+        input_name, _ = os.path.splitext(input_basename)
+
+        # Determine output paths
+        out_dir = args.outdir if args.outdir is not None else input_dir
+        if out_dir and not os.path.exists(out_dir):
+            log(f"Creating output directory: {out_dir}", args.verbose, is_verbose_msg=True)
+            os.makedirs(out_dir, exist_ok=True)
+
+        out_filename = f"{input_name}.{args.tag}.csv"
+        out_filepath = os.path.join(out_dir, out_filename) if out_dir else out_filename
+        out_filepath = os.path.abspath(out_filepath)
+
+        # Check if output already exists and we shouldn't refresh
+        if not args.refresh:
+            if os.path.exists(out_filepath) and os.path.getsize(out_filepath) > 0:
+                log("Output file already exists and is non-empty. Skipping calculation.", args.verbose, is_verbose_msg=True)
+                # Print strictly the path to STDOUT and exit
+                print(out_filepath)
+                sys.exit(0)
+
+        # Read input CSV
+        log(f"Reading input file: {input_file}", args.verbose, is_verbose_msg=True)
+        with open(input_file, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            fieldnames = set(reader.fieldnames or [])
+            
+            # Dynamically determine the column names based on the headers
+            name_col = 'name' if 'name' in fieldnames else 'Sequence_Id' if 'Sequence_Id' in fieldnames else None
+            heavy_col = 'heavy' if 'heavy' in fieldnames else 'H_Full' if 'H_Full' in fieldnames else None
+            light_col = 'light' if 'light' in fieldnames else 'L_Full' if 'L_Full' in fieldnames else None
+
+            if not (name_col and heavy_col and light_col):
+                log("Error: Input CSV must contain columns for name ('name' or 'Sequence_Id'), "
+                    "heavy chain ('heavy' or 'H_Full'), and light chain ('light' or 'L_Full').", args.verbose)
+                sys.exit(1)
+
+            for row in reader:
+                data.append({
+                    'name': row[name_col].strip(),
+                    'heavy': row[heavy_col].strip(),
+                    'light': row[light_col].strip()
+                })
+                
+    # Handle JSON string input
+    elif args.json:
+        log("Reading input from JSON string...", args.verbose, is_verbose_msg=True)
+        try:
+            raw_data = json.loads(args.json)
+            # Ensure it's a list for uniform processing
+            if isinstance(raw_data, dict):
+                raw_data = [raw_data]
+                
+            for row in raw_data:
+                name = row.get('name') or row.get('Sequence_Id', '')
+                heavy = row.get('heavy') or row.get('H_Full', '')
+                light = row.get('light') or row.get('L_Full', '')
+                
+                if not (heavy and light):
+                    log("Error: JSON input objects must contain heavy and light chain sequences.", args.verbose)
+                    sys.exit(1)
+                    
+                data.append({
+                    'name': str(name).strip(),
+                    'heavy': str(heavy).strip(),
+                    'light': str(light).strip()
+                })
+        except json.JSONDecodeError as e:
+            log(f"Error parsing JSON string: {e}", args.verbose)
+            sys.exit(1)
 
     if not data:
-        log("Error: Input CSV is empty.", args.verbose)
+        log("Error: No input data provided.", args.verbose)
         sys.exit(1)
 
     # Prepare sequences for FlashTAP (Format: HEAVY|LIGHT)
@@ -129,19 +165,23 @@ def main():
 
         out_data.append(out_row)
 
-    # Write Output
-    log(f"Writing results to: {out_filepath}", args.verbose, is_verbose_msg=True)
-    if out_data:
-        fieldnames = list(out_data[0].keys())
-        with open(out_filepath, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(out_data)
+    # Handle Output Routing
+    if args.inputfile:
+        log(f"Writing results to: {out_filepath}", args.verbose, is_verbose_msg=True)
+        if out_data:
+            fieldnames = list(out_data[0].keys())
+            with open(out_filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(out_data)
 
-    log("Processing complete.", args.verbose, is_verbose_msg=True)
-    
-    # Print strictly the path to STDOUT
-    print(out_filepath)
+        log("Processing complete.", args.verbose, is_verbose_msg=True)
+        # Print strictly the path to STDOUT
+        print(out_filepath)
+        
+    elif args.json:
+        # Print strictly the JSON result array to STDOUT
+        print(json.dumps(out_data, indent=4))
 
 if __name__ == "__main__":
     main()
